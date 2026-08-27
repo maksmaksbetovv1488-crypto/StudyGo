@@ -1,0 +1,6 @@
+flask
+aiogram
+google-genai
+python-dotenv
+apscheduler
+psycopg2-binary
