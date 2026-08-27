@@ -1,0 +1,5 @@
+flask
+aiogram
+google-genai
+python-dotenv
+apscheduler
