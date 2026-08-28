@@ -561,8 +561,11 @@ def reset_all_daily_scores():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET daily_score = 0")
+}
 
-
+def create_referral(referrer_id: int, referred_id: int) -> bool:
+    """Create pending referral. Returns False if already exists or self-ref."""
+    if referrer_id == referred_id:
 def get_level_progress(user_id: int) -> Dict[str, Any]:
     user = get_user(user_id)
     if not user:
@@ -582,9 +585,7 @@ def get_level_progress(user_id: int) -> Dict[str, Any]:
         "next_threshold": next_threshold,
         "progress": min(100, int(score / next_threshold * 100)) if next_threshold else 100,
       }
-    def create_referral(referrer_id: int, referred_id: int) -> bool:
-    """Create pending referral. Returns False if already exists or self-ref."""
-    if referrer_id == referred_id:
+    
         return False
     with get_db_connection() as conn:
         with conn.cursor() as cur:
