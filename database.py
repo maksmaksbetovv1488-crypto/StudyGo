@@ -581,7 +581,8 @@ def get_level_progress(user_id: int) -> Dict[str, Any]:
         "score": score,
         "next_threshold": next_threshold,
         "progress": min(100, int(score / next_threshold * 100)) if next_threshold else 100,
-      }def create_referral(referrer_id: int, referred_id: int) -> bool:
+      }
+    def create_referral(referrer_id: int, referred_id: int) -> bool:
     """Create pending referral. Returns False if already exists or self-ref."""
     if referrer_id == referred_id:
         return False
