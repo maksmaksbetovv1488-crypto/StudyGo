@@ -1,0 +1,19 @@
+"""Register all routers."""
+
+from aiogram import Router
+
+from handlers.start import router as start_router
+from handlers.ai import router as ai_router
+from handlers.shop import router as shop_router
+from handlers.social import router as social_router
+from handlers.admin import router as admin_router
+
+
+def setup_routers() -> Router:
+    root = Router()
+    root.include_router(start_router)
+    root.include_router(ai_router)
+    root.include_router(shop_router)
+    root.include_router(social_router)
+    root.include_router(admin_router)
+    return root
