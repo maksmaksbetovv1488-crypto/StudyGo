@@ -9,7 +9,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 import psycopg2
-from psycopg2.extras import RealDictCursor, execute_values
+from psycopg2.extras import RealDictCursor
 
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -20,7 +20,12 @@ def get_db_connection():
     """Context manager for database connections."""
     conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL is not set")
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            cursor_factory=RealDictCursor,
+        )
         yield conn
         conn.commit()
     except Exception:
@@ -231,69 +236,15 @@ def init_db():
 
 
 def _seed_achievements(cur):
-    """Insert default achievements if table is empty."""
-    cur.execute("SELECT COUNT(*) AS cnt FROM achievements")
-
-    if cur.fetchone()["cnt"] > 0:
-        return
-
+    """Insert default achievements if missing."""
     defaults = [
-        (
-            "first_task",
-            "Первое задание",
-            "Решил первое задание",
-            20,
-            10,
-            "🟢",
-        ),
-        (
-            "streak_7",
-            "7 дней активности",
-            "Активность 7 дней подряд",
-            100,
-            50,
-            "🔥",
-        ),
-        (
-            "solved_100",
-            "100 решённых заданий",
-            "Решил 100 заданий",
-            200,
-            100,
-            "📚",
-        ),
-        (
-            "referrals_10",
-            "10 успешных рефералов",
-            "Пригласил 10 друзей",
-            150,
-            80,
-            "👥",
-        ),
-        (
-            "referrals_50",
-            "50 успешных рефералов",
-            "Пригласил 50 друзей",
-            500,
-            250,
-            "🚀",
-        ),
-        (
-            "top10",
-            "TOP-10",
-            "Попал в TOP-10 Daily Rank",
-            100,
-            50,
-            "🏆",
-        ),
-        (
-            "first_premium",
-            "Первая покупка Premium",
-            "Купил Premium впервые",
-            50,
-            30,
-            "💎",
-        ),
+        ("first_task", "Первое задание", "Решил первое задание", 20, 10, "🟢"),
+        ("streak_7", "7 дней активности", "Активность 7 дней подряд", 100, 50, "🔥"),
+        ("solved_100", "100 решённых заданий", "Решил 100 заданий", 200, 100, "📚"),
+        ("referrals_10", "10 успешных рефералов", "Пригласил 10 друзей", 150, 80, "👥"),
+        ("referrals_50", "50 успешных рефералов", "Пригласил 50 друзей", 500, 250, "🚀"),
+        ("top10", "TOP-10", "Попал в TOP-10 Daily Rank", 100, 50, "🏆"),
+        ("first_premium", "Первая покупка Premium", "Купил Premium впервые", 50, 30, "💎"),
     ]
 
     for code, title, desc, xp, score, icon in defaults:
@@ -355,7 +306,7 @@ def _seed_economy_settings(cur):
             ON CONFLICT (key) DO NOTHING
             """,
             (key, value),
-            )
+        )
         def create_user(
     user_id: int,
     username: Optional[str] = None,
@@ -382,7 +333,12 @@ def _seed_economy_settings(cur):
                     updated_at = NOW()
                 RETURNING *
                 """,
-                (user_id, username, first_name, last_name),
+                (
+                    user_id,
+                    username,
+                    first_name,
+                    last_name,
+                ),
             )
             return cur.fetchone()
 
@@ -425,19 +381,26 @@ def is_user_blocked(user_id: int) -> bool:
     return bool(user and user["is_blocked"])
 
 
-def set_user_blocked(user_id: int, blocked: bool) -> bool:
+def set_user_blocked(
+    user_id: int,
+    blocked: bool,
+) -> bool:
     """Block or unblock a user."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE users
-                SET is_blocked = %s,
+                SET
+                    is_blocked = %s,
                     updated_at = NOW()
                 WHERE user_id = %s
                 RETURNING user_id
                 """,
-                (blocked, user_id),
+                (
+                    blocked,
+                    user_id,
+                ),
             )
             return cur.fetchone() is not None
 
@@ -535,89 +498,18 @@ def set_setting(
                     updated_at = NOW(),
                     updated_by = EXCLUDED.updated_by
                 """,
-                (key, str(value), updated_by),
-            )
-
-            return True
-
-
-def add_xp(
-    user_id: int,
-    amount: int,
-    reason: Optional[str] = None,
-    transaction_type: str = "manual",
-) -> Tuple[int, int]:
-    """
-    Add XP to user.
-
-    Returns:
-        (new_xp, new_level)
-    """
-    if amount == 0:
-        user = get_user(user_id)
-        if not user:
-            raise ValueError("User does not exist")
-
-        return user["xp"], user["level"]
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE users
-                SET
-                    xp = GREATEST(0, xp + %s),
-                    updated_at = NOW()
-                WHERE user_id = %s
-                RETURNING xp
-                """,
-                (amount, user_id),
-            )
-
-            row = cur.fetchone()
-
-            if row is None:
-                raise ValueError("User does not exist")
-
-            new_xp = row["xp"]
-
-            cur.execute(
-                """
-                INSERT INTO xp_transactions (
-                    user_id,
-                    amount,
-                    type,
-                    reason
-                )
-                VALUES (%s, %s, %s, %s)
-                """,
                 (
-                    user_id,
-                    amount,
-                    transaction_type,
-                    reason,
+                    key,
+                    str(value),
+                    updated_by,
                 ),
             )
-
-            new_level = calculate_level(new_xp)
-
-            cur.execute(
-                """
-                UPDATE users
-                SET level = %s,
-                    updated_at = NOW()
-                WHERE user_id = %s
-                """,
-                (new_level, user_id),
-            )
-
-            return new_xp, new_level
+            return True
 
 
 def calculate_level(xp: int) -> int:
     """Calculate level from XP."""
-    if xp < 0:
-        xp = 0
+    xp = max(0, int(xp))
 
     level = 1
     required = 100
@@ -630,11 +522,81 @@ def calculate_level(xp: int) -> int:
     return level
 
 
+def add_xp(
+    user_id: int,
+    amount: int,
+    reason: Optional[str] = None,
+    transaction_type: str = "manual",
+) -> Tuple[int, int]:
+    """Add XP and return (new_xp, new_level)."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET
+                    xp = GREATEST(0, xp + %s),
+                    updated_at = NOW()
+                WHERE user_id = %s
+                RETURNING xp
+                """,
+                (
+                    amount,
+                    user_id,
+                ),
+            )
+
+            row = cur.fetchone()
+
+            if row is None:
+                raise ValueError("User does not exist")
+
+            new_xp = row["xp"]
+            new_level = calculate_level(new_xp)
+
+            cur.execute(
+                """
+                UPDATE users
+                SET
+                    level = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                """,
+                (
+                    new_level,
+                    user_id,
+                ),
+            )
+
+            if amount != 0:
+                cur.execute(
+                    """
+                    INSERT INTO xp_transactions (
+                        user_id,
+                        amount,
+                        type,
+                        reason
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        amount,
+                        transaction_type,
+                        reason,
+                    ),
+                )
+
+            return new_xp, new_level
+
+
 def get_xp_history(
     user_id: int,
     limit: int = 50,
 ) -> List[Dict[str, Any]]:
     """Get XP transaction history."""
+    limit = max(1, int(limit))
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -645,7 +607,10 @@ def get_xp_history(
                 ORDER BY created_at DESC
                 LIMIT %s
                 """,
-                (user_id, limit),
+                (
+                    user_id,
+                    limit,
+                ),
             )
             return cur.fetchall()
 
@@ -654,10 +619,7 @@ def add_score(
     user_id: int,
     amount: int,
 ) -> Tuple[int, int]:
-    """
-    Add score and return:
-        (new_score, new_level)
-    """
+    """Add score and return (new_score, new_level)."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -667,9 +629,12 @@ def add_score(
                     score = GREATEST(0, score + %s),
                     updated_at = NOW()
                 WHERE user_id = %s
-                RETURNING score, level
+                RETURNING score
                 """,
-                (amount, user_id),
+                (
+                    amount,
+                    user_id,
+                ),
             )
 
             row = cur.fetchone()
@@ -683,11 +648,15 @@ def add_score(
             cur.execute(
                 """
                 UPDATE users
-                SET level = %s,
+                SET
+                    level = %s,
                     updated_at = NOW()
                 WHERE user_id = %s
                 """,
-                (new_level, user_id),
+                (
+                    new_level,
+                    user_id,
+                ),
             )
 
             return new_score, new_level
@@ -709,7 +678,10 @@ def add_daily_score(
                 WHERE user_id = %s
                 RETURNING daily_score
                 """,
-                (amount, user_id),
+                (
+                    amount,
+                    user_id,
+                ),
             )
 
             row = cur.fetchone()
@@ -720,7 +692,9 @@ def add_daily_score(
             return row["daily_score"]
 
 
-def increment_solved_tasks(user_id: int) -> int:
+def increment_solved_tasks(
+    user_id: int,
+) -> int:
     """Increment solved tasks counter."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -779,7 +753,10 @@ def get_top_users(
                     solved_tasks
                 FROM users
                 WHERE is_blocked = FALSE
-                ORDER BY score DESC, xp DESC, solved_tasks DESC
+                ORDER BY
+                    score DESC,
+                    xp DESC,
+                    solved_tasks DESC
                 LIMIT %s
                 """,
                 (limit,),
@@ -805,7 +782,9 @@ def get_daily_top_users(
                     level
                 FROM users
                 WHERE is_blocked = FALSE
-                ORDER BY daily_score DESC, score DESC
+                ORDER BY
+                    daily_score DESC,
+                    score DESC
                 LIMIT %s
                 """,
                 (limit,),
@@ -816,11 +795,7 @@ def get_daily_top_users(
     referred_id: int,
     referrer_id: int,
 ) -> bool:
-    """
-    Create referral relationship.
-
-    The referral is initially unconfirmed.
-    """
+    """Create referral relationship."""
     if referred_id == referrer_id:
         return False
 
@@ -871,7 +846,10 @@ def get_daily_top_users(
                 VALUES (%s, %s)
                 ON CONFLICT (referred_id) DO NOTHING
                 """,
-                (referred_id, referrer_id),
+                (
+                    referred_id,
+                    referrer_id,
+                ),
             )
 
             return cur.rowcount > 0
@@ -910,11 +888,7 @@ def get_referrer(
 def confirm_referral(
     referred_id: int,
 ) -> bool:
-    """
-    Confirm referral and reward both users.
-
-    Returns True only when confirmation happened now.
-    """
+    """Confirm referral and reward both users once."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -932,24 +906,10 @@ def confirm_referral(
 
             referral = cur.fetchone()
 
-            if referral is None:
-                return False
-
-            if referral["is_confirmed"]:
+            if referral is None or referral["is_confirmed"]:
                 return False
 
             referrer_id = referral["referrer_id"]
-
-            cur.execute(
-                """
-                UPDATE referrals
-                SET
-                    is_confirmed = TRUE,
-                    confirmed_at = NOW()
-                WHERE referred_id = %s
-                """,
-                (referred_id,),
-            )
 
             referrer_xp = get_setting_int(
                 "referral_referrer_xp",
@@ -963,22 +923,41 @@ def confirm_referral(
 
             cur.execute(
                 """
-                UPDATE users
-                SET xp = xp + %s,
-                    updated_at = NOW()
-                WHERE user_id = %s
+                UPDATE referrals
+                SET
+                    is_confirmed = TRUE,
+                    confirmed_at = NOW()
+                WHERE referred_id = %s
                 """,
-                (referrer_xp, referrer_id),
+                (referred_id,),
             )
 
             cur.execute(
                 """
                 UPDATE users
-                SET xp = xp + %s,
+                SET
+                    xp = xp + %s,
                     updated_at = NOW()
                 WHERE user_id = %s
                 """,
-                (referred_xp, referred_id),
+                (
+                    referrer_xp,
+                    referrer_id,
+                ),
+            )
+
+            cur.execute(
+                """
+                UPDATE users
+                SET
+                    xp = xp + %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                """,
+                (
+                    referred_xp,
+                    referred_id,
+                ),
             )
 
             cur.execute(
@@ -990,8 +969,18 @@ def confirm_referral(
                     reason
                 )
                 VALUES
-                    (%s, %s, 'referral', 'Реферальная награда'),
-                    (%s, %s, 'referral', 'Бонус за регистрацию по приглашению')
+                    (
+                        %s,
+                        %s,
+                        'referral',
+                        'Реферальная награда'
+                    ),
+                    (
+                        %s,
+                        %s,
+                        'referral',
+                        'Бонус за регистрацию по приглашению'
+                    )
                 """,
                 (
                     referrer_id,
@@ -1011,25 +1000,21 @@ def get_referral_count(
     """Get number of referrals."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            if confirmed_only:
-                cur.execute(
-                    """
-                    SELECT COUNT(*) AS cnt
-                    FROM referrals
-                    WHERE referrer_id = %s
-                      AND is_confirmed = TRUE
-                    """,
-                    (user_id,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT COUNT(*) AS cnt
-                    FROM referrals
-                    WHERE referrer_id = %s
-                    """,
-                    (user_id,),
-                )
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM referrals
+                WHERE referrer_id = %s
+                  AND (
+                      %s = FALSE
+                      OR is_confirmed = TRUE
+                  )
+                """,
+                (
+                    user_id,
+                    confirmed_only,
+                ),
+            )
 
             return int(cur.fetchone()["cnt"])
 
@@ -1041,39 +1026,28 @@ def get_referrals(
     """Get user's referrals."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            if confirmed_only:
-                cur.execute(
-                    """
-                    SELECT
-                        r.*,
-                        u.username,
-                        u.first_name,
-                        u.last_name
-                    FROM referrals r
-                    JOIN users u
-                        ON u.user_id = r.referred_id
-                    WHERE r.referrer_id = %s
-                      AND r.is_confirmed = TRUE
-                    ORDER BY r.created_at DESC
-                    """,
-                    (user_id,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT
-                        r.*,
-                        u.username,
-                        u.first_name,
-                        u.last_name
-                    FROM referrals r
-                    JOIN users u
-                        ON u.user_id = r.referred_id
-                    WHERE r.referrer_id = %s
-                    ORDER BY r.created_at DESC
-                    """,
-                    (user_id,),
-                )
+            cur.execute(
+                """
+                SELECT
+                    r.*,
+                    u.username,
+                    u.first_name,
+                    u.last_name
+                FROM referrals r
+                JOIN users u
+                    ON u.user_id = r.referred_id
+                WHERE r.referrer_id = %s
+                  AND (
+                      %s = FALSE
+                      OR r.is_confirmed = TRUE
+                  )
+                ORDER BY r.created_at DESC
+                """,
+                (
+                    user_id,
+                    confirmed_only,
+                ),
+            )
 
             return cur.fetchall()
 
@@ -1100,7 +1074,9 @@ def get_referral_leaderboard(
                     u.user_id,
                     u.username,
                     u.first_name
-                ORDER BY referrals DESC, u.user_id
+                ORDER BY
+                    referrals DESC,
+                    u.user_id
                 LIMIT %s
                 """,
                 (limit,),
@@ -1113,12 +1089,7 @@ def update_streak(
     user_id: int,
     activity_date: Optional[date] = None,
 ) -> int:
-    """
-    Update user's daily streak.
-
-    If the user was active yesterday, streak increases.
-    If activity is already recorded today, it is not increased twice.
-    """
+    """Update user's daily streak."""
     if activity_date is None:
         activity_date = date.today()
 
@@ -1126,7 +1097,9 @@ def update_streak(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT streak, last_daily_date
+                SELECT
+                    streak,
+                    last_daily_date
                 FROM users
                 WHERE user_id = %s
                 FOR UPDATE
@@ -1140,7 +1113,7 @@ def update_streak(
                 raise ValueError("User does not exist")
 
             last_date = user["last_daily_date"]
-            streak = user["streak"] or 0
+            streak = int(user["streak"] or 0)
 
             if last_date == activity_date:
                 return streak
@@ -1169,7 +1142,9 @@ def update_streak(
             return streak
 
 
-def get_streak(user_id: int) -> int:
+def get_streak(
+    user_id: int,
+) -> int:
     """Get current streak."""
     user = get_user(user_id)
 
@@ -1197,7 +1172,8 @@ def create_daily_task(
                 )
                 VALUES (%s, %s)
                 ON CONFLICT (user_id, task_date)
-                DO UPDATE SET user_id = EXCLUDED.user_id
+                DO UPDATE SET
+                    user_id = EXCLUDED.user_id
                 RETURNING *
                 """,
                 (
@@ -1267,7 +1243,7 @@ def claim_daily_task_reward(
     user_id: int,
     task_date: Optional[date] = None,
 ) -> bool:
-    """Claim daily task reward."""
+    """Mark daily task reward as claimed."""
     if task_date is None:
         task_date = date.today()
 
@@ -1307,7 +1283,8 @@ def create_weekly_task(
                 )
                 VALUES (%s, %s)
                 ON CONFLICT (user_id, week_start)
-                DO UPDATE SET user_id = EXCLUDED.user_id
+                DO UPDATE SET
+                    user_id = EXCLUDED.user_id
                 RETURNING *
                 """,
                 (
@@ -1371,7 +1348,7 @@ def claim_weekly_task_reward(
     user_id: int,
     week_start: date,
 ) -> bool:
-    """Claim weekly task reward."""
+    """Mark weekly task reward as claimed."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1453,11 +1430,7 @@ def award_achievement(
     user_id: int,
     code: str,
 ) -> bool:
-    """
-    Award achievement and its rewards.
-
-    Returns True if achievement was awarded now.
-    """
+    """Award achievement and its rewards once."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1504,24 +1477,47 @@ def award_achievement(
                 ),
             )
 
-            xp_reward = achievement["xp_reward"] or 0
-            score_reward = achievement["score_reward"] or 0
+            xp_reward = int(achievement["xp_reward"] or 0)
+            score_reward = int(achievement["score_reward"] or 0)
+
+            cur.execute(
+                """
+                SELECT xp, score
+                FROM users
+                WHERE user_id = %s
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+
+            user = cur.fetchone()
+
+            if user is None:
+                raise ValueError("User does not exist")
+
+            new_xp = int(user["xp"] or 0) + xp_reward
+            new_score = int(user["score"] or 0) + score_reward
+            new_level = calculate_level(new_xp)
+
+            cur.execute(
+                """
+                UPDATE users
+                SET
+                    xp = %s,
+                    score = %s,
+                    level = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                """,
+                (
+                    new_xp,
+                    new_score,
+                    new_level,
+                    user_id,
+                ),
+            )
 
             if xp_reward:
-                cur.execute(
-                    """
-                    UPDATE users
-                    SET
-                        xp = xp + %s,
-                        updated_at = NOW()
-                    WHERE user_id = %s
-                    """,
-                    (
-                        xp_reward,
-                        user_id,
-                    ),
-                )
-
                 cur.execute(
                     """
                     INSERT INTO xp_transactions (
@@ -1536,21 +1532,6 @@ def award_achievement(
                         user_id,
                         xp_reward,
                         achievement["title"],
-                    ),
-                )
-
-            if score_reward:
-                cur.execute(
-                    """
-                    UPDATE users
-                    SET
-                        score = score + %s,
-                        updated_at = NOW()
-                    WHERE user_id = %s
-                    """,
-                    (
-                        score_reward,
-                        user_id,
                     ),
                 )
 
@@ -1637,7 +1618,10 @@ def get_ai_usage_count(
                 query += " AND created_at >= %s"
                 params.append(since)
 
-            cur.execute(query, params)
+            cur.execute(
+                query,
+                params,
+            )
 
             return int(cur.fetchone()["cnt"])
 
@@ -1664,7 +1648,12 @@ def add_stars_purchase(
                     provider_payment_charge_id
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
                 )
                 RETURNING *
                 """,
@@ -1731,11 +1720,12 @@ def set_premium(
             cur.execute(
                 """
                 UPDATE users
-                SET premium_until =
-                    CASE
+                SET
+                    premium_until = CASE
                         WHEN premium_until IS NULL
                              OR premium_until < NOW()
-                        THEN NOW() + (%s * INTERVAL '1 day')
+                        THEN NOW()
+                             + (%s * INTERVAL '1 day')
                         ELSE premium_until
                              + (%s * INTERVAL '1 day')
                     END,
@@ -1758,7 +1748,9 @@ def set_premium(
             return row["premium_until"]
 
 
-def is_premium(user_id: int) -> bool:
+def is_premium(
+    user_id: int,
+) -> bool:
     """Check active premium."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -1884,7 +1876,9 @@ def save_daily_rank(
             )
 
             return True
-            def get_daily_rank_history(
+
+
+def get_daily_rank_history(
     user_id: int,
     limit: int = 30,
 ) -> List[Dict[str, Any]]:
@@ -1939,16 +1933,10 @@ def get_daily_rank(
             )
 
             return cur.fetchall()
-
-
-def reward_daily_rank(
+            def reward_daily_rank(
     rank_date: Optional[date] = None,
 ) -> int:
-    """
-    Save daily ranking and reward TOP-3.
-
-    Returns number of rewarded users.
-    """
+    """Save daily ranking and reward TOP-3 once."""
     if rank_date is None:
         rank_date = date.today()
 
@@ -1964,16 +1952,28 @@ def reward_daily_rank(
                 FROM users
                 WHERE is_blocked = FALSE
                   AND daily_score > 0
-                ORDER BY daily_score DESC, score DESC
+                ORDER BY
+                    daily_score DESC,
+                    score DESC,
+                    user_id ASC
                 """
             )
 
             users = cur.fetchall()
 
             reward_map = {
-                1: get_setting_int("daily_rank_1", 100),
-                2: get_setting_int("daily_rank_2", 70),
-                3: get_setting_int("daily_rank_3", 50),
+                1: get_setting_int(
+                    "daily_rank_1",
+                    100,
+                ),
+                2: get_setting_int(
+                    "daily_rank_2",
+                    70,
+                ),
+                3: get_setting_int(
+                    "daily_rank_3",
+                    50,
+                ),
             }
 
             for place, user in enumerate(users, start=1):
@@ -2004,89 +2004,121 @@ def reward_daily_rank(
                     ),
                 )
 
-                if reward > 0:
+                if reward <= 0:
+                    continue
+
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM xp_transactions
+                    WHERE user_id = %s
+                      AND type = 'daily_rank'
+                      AND reason = %s
+                    LIMIT 1
+                    """,
+                    (
+                        user["user_id"],
+                        f"Daily Rank {rank_date}",
+                    ),
+                )
+
+                if cur.fetchone() is not None:
+                    continue
+
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET
+                        xp = xp + %s,
+                        level = %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                    """,
+                    (
+                        reward,
+                        calculate_level(
+                            int(user.get("daily_score") or 0)
+                        ),
+                        user["user_id"],
+                    ),
+                )
+
+                cur.execute(
+                    """
+                    SELECT xp
+                    FROM users
+                    WHERE user_id = %s
+                    """,
+                    (user["user_id"],),
+                )
+
+                current_user = cur.fetchone()
+
+                if current_user:
+                    new_level = calculate_level(
+                        int(current_user["xp"] or 0)
+                    )
+
                     cur.execute(
                         """
-                        SELECT reward_xp
-                        FROM daily_rank_history
-                        WHERE rank_date = %s
-                          AND user_id = %s
+                        UPDATE users
+                        SET
+                            level = %s,
+                            updated_at = NOW()
+                        WHERE user_id = %s
                         """,
                         (
-                            rank_date,
+                            new_level,
                             user["user_id"],
                         ),
                     )
 
-                    saved = cur.fetchone()
+                cur.execute(
+                    """
+                    INSERT INTO xp_transactions (
+                        user_id,
+                        amount,
+                        type,
+                        reason
+                    )
+                    VALUES (%s, %s, 'daily_rank', %s)
+                    """,
+                    (
+                        user["user_id"],
+                        reward,
+                        f"Daily Rank {rank_date}",
+                    ),
+                )
 
-                    if saved and saved["reward_xp"] == reward:
-                        cur.execute(
-                            """
-                            SELECT COUNT(*) AS cnt
-                            FROM xp_transactions
-                            WHERE user_id = %s
-                              AND type = 'daily_rank'
-                              AND reason = %s
-                            """,
-                            (
-                                user["user_id"],
-                                f"Daily Rank {rank_date}",
-                            ),
-                        )
-
-                        already = cur.fetchone()["cnt"]
-
-                        if already == 0:
-                            cur.execute(
-                                """
-                                UPDATE users
-                                SET
-                                    xp = xp + %s,
-                                    updated_at = NOW()
-                                WHERE user_id = %s
-                                """,
-                                (
-                                    reward,
-                                    user["user_id"],
-                                ),
-                            )
-
-                            cur.execute(
-                                """
-                                INSERT INTO xp_transactions (
-                                    user_id,
-                                    amount,
-                                    type,
-                                    reason
-                                )
-                                VALUES (%s, %s, 'daily_rank', %s)
-                                """,
-                                (
-                                    user["user_id"],
-                                    reward,
-                                    f"Daily Rank {rank_date}",
-                                ),
-                            )
-
-                            rewarded += 1
+                rewarded += 1
 
             return rewarded
+
+
+def close_daily_rank_and_reward(
+    rank_date: Optional[date] = None,
+) -> int:
+    """
+    Compatibility wrapper for main.py.
+
+    main.py can import this function directly.
+    """
+    return reward_daily_rank(rank_date)
 
 
 def cleanup_old_ai_usage(
     days: int = 90,
 ) -> int:
     """Delete old AI usage records."""
-    if days < 1:
-        days = 1
+    days = max(1, int(days))
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 DELETE FROM ai_usage
-                WHERE created_at < NOW() - (%s * INTERVAL '1 day')
+                WHERE created_at <
+                    NOW() - (%s * INTERVAL '1 day')
                 """,
                 (days,),
             )
@@ -2098,15 +2130,15 @@ def cleanup_old_rank_history(
     days: int = 365,
 ) -> int:
     """Delete old daily rank history."""
-    if days < 1:
-        days = 1
+    days = max(1, int(days))
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 DELETE FROM daily_rank_history
-                WHERE rank_date < CURRENT_DATE - %s
+                WHERE rank_date <
+                    CURRENT_DATE - %s
                 """,
                 (days,),
             )
@@ -2229,77 +2261,23 @@ def get_statistics() -> Dict[str, Any]:
 def delete_user(
     user_id: int,
 ) -> bool:
-    """
-    Delete user and dependent records.
-
-    Because most tables use foreign keys without ON DELETE CASCADE,
-    dependent rows are removed manually first.
-    """
+    """Delete user and dependent records."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                DELETE FROM user_achievements
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM xp_transactions
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM stars_purchases
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM daily_tasks
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM weekly_tasks
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM daily_rank_history
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM ai_usage
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            cur.execute(
-                """
-                DELETE FROM subscription_checks
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
+            for table in (
+                "user_achievements",
+                "xp_transactions",
+                "stars_purchases",
+                "daily_tasks",
+                "weekly_tasks",
+                "daily_rank_history",
+                "ai_usage",
+                "subscription_checks",
+            ):
+                cur.execute(
+                    f"DELETE FROM {table} WHERE user_id = %s",
+                    (user_id,),
+                )
 
             cur.execute(
                 """
@@ -2329,31 +2307,46 @@ def health_check() -> bool:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT 1 AS ok")
+                cur.execute(
+                    """
+                    SELECT 1 AS ok
+                    """
+                )
+
                 row = cur.fetchone()
-                return bool(row and row["ok"] == 1)
+
+                return bool(
+                    row
+                    and row["ok"] == 1
+                )
+
     except Exception:
         return False
 
 
 def vacuum_analyze():
     """
-    Run VACUUM ANALYZE.
-
-    PostgreSQL does not allow VACUUM inside a transaction,
-    so this function uses a separate autocommit connection.
+    Run VACUUM ANALYZE using an autocommit connection.
     """
     conn = None
 
     try:
+        if not DATABASE_URL:
+            raise RuntimeError(
+                "DATABASE_URL is not set"
+            )
+
         conn = psycopg2.connect(
             DATABASE_URL,
             cursor_factory=RealDictCursor,
         )
+
         conn.autocommit = True
 
         with conn.cursor() as cur:
-            cur.execute("VACUUM ANALYZE")
+            cur.execute(
+                "VACUUM ANALYZE"
+            )
 
     finally:
         if conn:
@@ -2431,6 +2424,7 @@ __all__ = [
     "get_daily_rank_history",
     "get_daily_rank",
     "reward_daily_rank",
+    "close_daily_rank_and_reward",
 
     "cleanup_old_ai_usage",
     "cleanup_old_rank_history",
